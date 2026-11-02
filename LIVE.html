@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chat Courier: LIVE — your chat is the level</title>
+<style>
+  :root{--cyan:#5ef2ff;--pink:#ff6fb5;--gold:#ffd166;--ink:#070814;--panel:rgba(12,13,30,.88);--line:rgba(94,242,255,.28)}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--ink);color:#e8ecff;font-family:"Segoe UI",system-ui,sans-serif;overflow:hidden}
+  body.overlay{background:transparent}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;display:block}
+  #panel{position:fixed;right:14px;top:14px;width:320px;max-height:calc(100vh - 28px);overflow:auto;background:var(--panel);
+    border:1px solid var(--line);border-radius:16px;padding:14px 16px;font-size:13px;backdrop-filter:blur(10px);z-index:5;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  body.overlay #panel, body.overlay #toggle{display:none}
+  #panel.hidden{display:none}
+  #panel h2{margin:2px 0 8px;font-size:16px;letter-spacing:.1em;color:var(--cyan)}
+  #panel h3{margin:14px 0 6px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#9aa3c7}
+  #panel button{margin:3px 4px 3px 0;padding:7px 10px;border-radius:9px;border:1px solid #2f3a6b;background:#141938;color:#e8ecff;cursor:pointer;font-weight:600;font-size:12px}
+  #panel button:hover{border-color:var(--cyan);box-shadow:0 0 12px rgba(94,242,255,.25)}
+  .hint{color:#8b93b8;font-size:12px;line-height:1.5}
+  code{color:var(--gold)}
+  #toggle{position:fixed;right:14px;bottom:14px;z-index:6;padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:#cfd6ff;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" width="1920" height="1080"></canvas></div>
+<button id="toggle">Panel (H)</button>
+<div id="panel">
+  <h2>CHAT COURIER: LIVE</h2>
+  <div class="hint">Your chat <b>is</b> the level. Every message turns into a signed piece of cargo on the road.
+  Type <code>!glow</code> to join the <b style="color:var(--cyan)">Glow crew</b> (your words become stars the courier collects) or
+  <code>!mischief</code> to join the <b style="color:var(--pink)">Mischief crew</b> (your words become storm clouds that dim the lantern).
+  The streamer steers with <b>↑/↓</b>, <b>W/S</b> or a click on a lane.</div>
+  <h3>Twitch</h3>
+  <div id="twitchStatus" class="hint">Twitch: not connected · Bridge: checking…</div>
+  <button onclick="window.open('CONNECT.html','connect')">Open CONNECT.html</button>
+  <h3>Game</h3>
+  <button id="start">Start / Restart (Space)</button><button id="auto">Autopilot (A)</button>
+  <h3>Live events (Twitch EventSub)</h3>
+  <div class="hint">Channel points → umbrella or cloud burst · Sub → golden gift · Bits → star or cloud shower · Raid → parade of stars.</div>
+  <h3>Try it yourself: type a chat message</h3>
+  <input id="simUser" placeholder="viewer name" value="judge" maxlength="18"
+    style="width:100%;margin:3px 0 6px;padding:7px 8px;border-radius:8px;border:1px solid #2b2f55;background:#0b0c1d;color:#fff">
+  <input id="simText" placeholder="e.g. !glow lets go courier   or   !mischief chaos time" maxlength="120"
+    style="width:100%;margin:3px 0 6px;padding:7px 8px;border-radius:8px;border:1px solid #2b2f55;background:#0b0c1d;color:#fff">
+  <button id="simSend">Send to road (Enter)</button>
+  <div class="hint">Your longest word becomes a signed star (Glow crew) or storm cloud (Mischief crew). Start a run first.</div>
+  <h3>Rehearse without Twitch</h3>
+  <button data-sim="chat">Chat (C)</button><button data-sim="glow">!glow (L)</button><button data-sim="mischief">!mischief (M)</button>
+  <button data-sim="reward">Points (P)</button><button data-sim="cheer">Bits (B)</button><button data-sim="subscribe">Sub (U)</button>
+  <button data-sim="raid">Raid (R)</button>
+  <h3>OBS</h3>
+  <div class="hint">Browser Source → this page with <code>?overlay=1</code>, 1920×1080. Transparent background, no panel.</div>
+</div>
+<script src="overlay-bridge.js"></script>
+<script>
+(() => {
+'use strict';
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+const W = 1920, H = 1080;
+const params = new URLSearchParams(location.search);
+const OVERLAY = params.get('overlay') === '1';
+if (OVERLAY) document.body.classList.add('overlay');
+
+const LANES = [560, 730, 900];
+const C = {cyan:'#5ef2ff', pink:'#ff6fb5', gold:'#ffd166', mint:'#7dffb0', white:'#eef1ff', dim:'#8b93b8', violet:'#9b7bff'};
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const hash = s => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+const STOP = new Set('the a an and or to of in on is it i you me my we for this that with be are was so lol just like what yes no ok im its do it\'s'.split(' '));
+
+// ------------------------------------------------------------ state
+let S;
+function fresh() {
+  return {
+    phase: 'title', t: 0, lane: 1, y: LANES[1], glow: 5, maxGlow: 5, stars: 0, goal: 25, time: 120, speed: 430,
+    objs: [], parts: [], floats: [], banners: [], feed: [], umbrella: 0, shake: 0, flash: 0,
+    crew: S ? S.crew : new Map(), mvp: { glow: new Map(), mischief: new Map() },
+    stats: { msgs: 0, stars: 0, clouds: 0, events: 0, dodged: 0 }, scroll: 0, winner: null, idle: 0
+  };
+}
+S = fresh();
+let auto = false;
+
+function crewOf(user) {
+  if (!S.crew.has(user)) S.crew.set(user, (hash(user) % 2) ? 'glow' : 'mischief');
+  return S.crew.get(user);
+}
+function word(text) {
+  const ws = String(text || '').replace(/[^\p{L}\p{N}']+/gu, ' ').split(' ')
+    .filter(w => w && !STOP.has(w.toLowerCase()));
+  if (!ws.length) return null;
+  return ws.sort((a, b) => b.length - a.length)[0].slice(0, 12).toUpperCase();
+}
+function addFeed(text, color) { S.feed.unshift({ text, color, life: 10 }); S.feed.length = Math.min(S.feed.length, 6); }
+function banner(title, sub, color) { S.banners.push({ title, sub, color, life: 3.2 }); }
+function floatText(text, x, y, color, size = 40) { S.floats.push({ text, x, y, color, size, life: 1.3 }); }
+function burst(x, y, color, n = 18, sp = 380) {
+  for (let i = 0; i < n; i++) { const a = rnd(0, Math.PI * 2), v = rnd(sp * .3, sp);
+    S.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rnd(.5, 1.1), color, r: rnd(3, 7) }); }
+}
+function spawn(kind, label, user, o = {}) {
+  const lane = o.lane ?? Math.floor(Math.random() * 3);
+  S.objs.push({ kind, label, user, lane, x: W + 160 + (o.delay || 0), y: LANES[lane], bob: rnd(0, 6), big: !!o.big, value: o.value || 1 });
+}
+
+// ------------------------------------------------------------ events (shared interface with eventsub.js)
+// detail: {type:"chat"|"reward"|"subscribe"|"cheer"|"raid"|"follow", user, text, amount, id, source}
+const seen = new Set();
+window.addEventListener('courier-event', e => handle(e.detail || {}));
+function handle(d) {
+  if (OVERLAY) return; // the overlay never runs its own game; it mirrors the controller
+  if (d.id) { if (seen.has(d.id)) return; seen.add(d.id); if (seen.size > 2000) seen.clear(); }
+  const user = String(d.user || 'someone').slice(0, 18);
+  const live = S.phase === 'play';
+  S.stats.events++;
+  switch (d.type) {
+    case 'chat': {
+      const text = String(d.text || '');
+      const low = text.toLowerCase();
+      if (/(^|\s)!(glow|light|help)\b/.test(low)) { S.crew.set(user, 'glow'); addFeed(`${user} joined the Glow crew`, C.cyan); }
+      else if (/(^|\s)!(mischief|storm|chaos)\b/.test(low)) { S.crew.set(user, 'mischief'); addFeed(`${user} joined the Mischief crew`, C.pink); }
+      S.stats.msgs++;
+      if (!live) return;
+      const w = word(text.replace(/!\w+/g, '')) || (crewOf(user) === 'glow' ? 'SPARK' : 'FOG');
+      spawn(crewOf(user) === 'glow' ? 'star' : 'cloud', w, user);
+      return;
+    }
+    case 'reward': {
+      const title = d.rewardTitle || d.text || 'channel points';
+      const chaos = /mischief|storm|chaos|cloud/i.test(title);
+      if (chaos) { banner(`${user} redeemed STORM FRONT`, 'Five clouds roll in!', C.pink);
+        if (live) for (let i = 0; i < 5; i++) spawn('cloud', 'STORM', user, { lane: i % 3, delay: i * 240 }); }
+      else { banner(`${user} redeemed UMBRELLA`, 'Courier is covered for 8 seconds', C.cyan); if (live) S.umbrella = 8; }
+      addFeed(`★ ${user} · ${title}`, C.gold);
+      return;
+    }
+    case 'subscribe': {
+      banner(`${user} subscribed!`, 'A golden gift box drops on the road', C.gold);
+      addFeed(`♦ ${user} subscribed`, C.gold);
+      if (live) spawn('gift', 'GIFT', user, { lane: S.lane, big: true });
+      return;
+    }
+    case 'cheer': {
+      const bits = Math.max(1, Number(d.amount) || 100), n = clamp(Math.round(bits / 100), 1, 12);
+      const kind = crewOf(user) === 'glow' ? 'star' : 'cloud';
+      banner(`${user} cheered ${bits} bits`, kind === 'star' ? `${n} stars rain down` : `${n} clouds roll in`, kind === 'star' ? C.cyan : C.pink);
+      addFeed(`◆ ${user} · ${bits} bits`, C.violet);
+      if (live) for (let i = 0; i < n; i++) spawn(kind, kind === 'star' ? 'BITS' : 'BITS', user, { delay: i * 150 });
+      return;
+    }
+    case 'raid': {
+      const v = Number(d.amount) || 10;
+      banner(`RAID from ${user}!`, `${v} raiders become a parade of stars`, C.mint);
+      addFeed(`➜ raid · ${user} (${v})`, C.mint);
+      if (live) for (let i = 0; i < clamp(Math.round(v / 5), 4, 15); i++) spawn('star', 'RAID', user, { lane: i % 3, delay: i * 120 });
+      return;
+    }
+    case 'follow': {
+      addFeed(`+ ${user} followed`, C.mint);
+      if (live) spawn('star', 'HELLO', user);
+      return;
+    }
+  }
+}
+
+// ------------------------------------------------------------ simulation (labelled SIM)
+const NAMES = ['pixelpanda', 'moth_mom', 'glitchy', 'tacocat', 'nova_z', 'quietfox', 'bytebard', 'lumen', 'zeroCool', 'mapleleaf', 'kiwi_kat', 'orbit'];
+const LINES = ['lets go courier', 'this road is spooky', 'hype hype hype', 'dodge left!!', 'so cute', 'gg', 'bring the light home',
+  'carefully now', 'pog', 'storm incoming', 'you got this', 'turn around', 'brave little bot', 'midnight delivery'];
+let simN = 0;
+function sim(type) {
+  const user = NAMES[Math.floor(Math.random() * NAMES.length)];
+  const base = { user, id: 'sim-' + (++simN), source: 'SIM' };
+  const d = type === 'glow' ? { ...base, type: 'chat', text: '!glow ' + LINES[Math.floor(Math.random() * LINES.length)] }
+    : type === 'mischief' ? { ...base, type: 'chat', text: '!mischief ' + LINES[Math.floor(Math.random() * LINES.length)] }
+    : type === 'chat' ? { ...base, type: 'chat', text: LINES[Math.floor(Math.random() * LINES.length)] }
+    : type === 'reward' ? { ...base, type: 'reward', text: Math.random() < .5 ? 'Umbrella' : 'Storm front' }
+    : type === 'cheer' ? { ...base, type: 'cheer', amount: 500 }
+    : type === 'subscribe' ? { ...base, type: 'subscribe' }
+    : { ...base, type: 'raid', amount: 40 };
+  window.dispatchEvent(new CustomEvent('courier-event', { detail: d }));
+}
+
+// ------------------------------------------------------------ controls
+function start() { S = fresh(); S.phase = 'play'; banner('DELIVERY START', 'Collect 25 stars · keep the lantern lit', C.cyan); }
+addEventListener('keydown', e => {
+  if (OVERLAY || (e.target && e.target.tagName === 'INPUT')) return;
+  const k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); if (S.phase !== 'play') start(); }
+  else if (k === 'arrowup' || k === 'w') { S.lane = clamp(S.lane - 1, 0, 2); e.preventDefault(); }
+  else if (k === 'arrowdown' || k === 's') { S.lane = clamp(S.lane + 1, 0, 2); e.preventDefault(); }
+  else if (k === 'a') auto = !auto;
+  else if (k === 'h') document.getElementById('panel').classList.toggle('hidden');
+  else ({ c: 'chat', l: 'glow', m: 'mischief', p: 'reward', b: 'cheer', u: 'subscribe', r: 'raid' })[k] && sim(({ c: 'chat', l: 'glow', m: 'mischief', p: 'reward', b: 'cheer', u: 'subscribe', r: 'raid' })[k]);
+});
+cv.addEventListener('pointerdown', e => {
+  if (OVERLAY) return;
+  const r = cv.getBoundingClientRect(), y = (e.clientY - r.top) / r.height * H;
+  if (S.phase !== 'play') { start(); return; }
+  let best = 0; LANES.forEach((ly, i) => { if (Math.abs(ly - y) < Math.abs(LANES[best] - y)) best = i; }); S.lane = best;
+});
+document.getElementById('start').onclick = () => start();
+document.getElementById('auto').onclick = () => { auto = !auto; };
+document.getElementById('toggle').onclick = () => document.getElementById('panel').classList.toggle('hidden');
+document.querySelectorAll('[data-sim]').forEach(b => b.onclick = () => sim(b.dataset.sim));
+function sendTyped() {
+  const u = document.getElementById('simUser'), t = document.getElementById('simText');
+  const user = (u.value || 'judge').trim().slice(0, 18) || 'judge', text = (t.value || '').trim();
+  if (!text) return;
+  window.dispatchEvent(new CustomEvent('courier-event', { detail: { type: 'chat', user, text, id: 'typed-' + (++simN), source: 'SIM' } }));
+  t.value = ''; t.focus();
+}
+document.getElementById('simSend').onclick = sendTyped;
+document.getElementById('simText').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); sendTyped(); } });
+
+// ------------------------------------------------------------ OBS sync (overlay-bridge.js)
+// Controller publishes the full game state every 100 ms; the overlay only draws the latest snapshot
+// (plus visual dead-reckoning between snapshots), so OBS always shows the streamer's game.
+function snapshot() {
+  let gl = 0, mi = 0; for (const v of S.crew.values()) v === 'glow' ? gl++ : mi++;
+  return {
+    phase: S.phase, lane: S.lane, y: S.y, glow: S.glow, maxGlow: S.maxGlow, stars: S.stars, goal: S.goal, time: S.time,
+    speed: S.speed, umbrella: S.umbrella, shake: S.shake, flash: S.flash, scroll: S.scroll, winner: S.winner,
+    objs: S.objs.map(o => ({ kind: o.kind, label: o.label, user: o.user, lane: o.lane, x: o.x, y: o.y, bob: o.bob })),
+    parts: S.parts.slice(-160).map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, life: p.life, color: p.color, r: p.r })),
+    floats: S.floats, banners: S.banners, feed: S.feed, crewCounts: { glow: gl, mischief: mi },
+    mvp: { glow: [...S.mvp.glow], mischief: [...S.mvp.mischief] }, stats: S.stats
+  };
+}
+function applySnapshot(d) {
+  if (!d || typeof d !== 'object') return;
+  const t = S.t; Object.assign(S, d); S.t = t;
+  S.mvp = { glow: new Map(d.mvp?.glow || []), mischief: new Map(d.mvp?.mischief || []) };
+}
+if (OVERLAY) addEventListener('courier-state', e => applySnapshot(e.detail));
+else setInterval(() => { if (window.CourierOverlay) window.CourierOverlay.publish(snapshot()); }, 100);
+
+let tw = { connected: false, message: 'Not connected' }, bridgeUp = null;
+function refreshStatus() {
+  const el = document.getElementById('twitchStatus'); if (!el) return;
+  el.textContent = `Twitch: ${tw.connected ? 'connected' + (tw.channel ? ' · #' + tw.channel : '') : (tw.message || 'not connected')} · Bridge: ${bridgeUp === null ? 'checking…' : bridgeUp ? 'online' : 'offline (open via http://127.0.0.1:8787)'}`;
+}
+addEventListener('courier-connection', e => { tw = e.detail || tw; refreshStatus(); });
+addEventListener('courier-bridge', e => { bridgeUp = !!(e.detail && e.detail.connected); refreshStatus(); });
+refreshStatus();
+
+// ------------------------------------------------------------ update
+function update(dt) {
+  if (OVERLAY) { // draw-only: advance visuals between 100 ms snapshots, never game rules
+    S.t += dt; S.scroll += dt * (S.phase === 'play' ? (S.speed || 430) : 120);
+    if (S.phase === 'play') for (const o of S.objs) o.x -= (S.speed || 430) * dt;
+    for (const p of S.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
+    S.parts = S.parts.filter(p => p.life > 0);
+    return;
+  }
+  S.t += dt; S.scroll += dt * (S.phase === 'play' ? S.speed : 120);
+  S.shake = Math.max(0, S.shake - dt * 3); S.flash = Math.max(0, S.flash - dt * 2);
+  for (const p of S.parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }
+  S.parts = S.parts.filter(p => p.life > 0);
+  for (const f of S.floats) { f.y -= 70 * dt; f.life -= dt; } S.floats = S.floats.filter(f => f.life > 0);
+  for (const b of S.banners) b.life -= dt; S.banners = S.banners.filter(b => b.life > 0);
+  for (const f of S.feed) f.life -= dt; S.feed = S.feed.filter(f => f.life > 0);
+  if (S.phase !== 'play') return;
+
+  S.time -= dt; S.umbrella = Math.max(0, S.umbrella - dt);
+  S.speed = 430 + (120 - S.time) * 2.6;
+  // the road is never empty: quiet chat still brings some ambient cargo
+  S.idle -= dt;
+  if (S.idle <= 0) { S.idle = rnd(.9, 1.6); spawn(Math.random() < .55 ? 'star' : 'cloud', Math.random() < .55 ? '✦' : '~', null); }
+
+  if (auto) { // simple autopilot for rehearsal videos: avoid nearest cloud, chase nearest star
+    const ahead = S.objs.filter(o => o.x > 300 && o.x < 1000).sort((a, b) => a.x - b.x);
+    const threat = ahead.find(o => o.kind === 'cloud' && o.lane === S.lane);
+    const prize = ahead.find(o => o.kind !== 'cloud');
+    if (threat) { const opts = [0, 1, 2].filter(l => !ahead.some(o => o.kind === 'cloud' && o.lane === l && o.x < threat.x + 200));
+      if (opts.length) S.lane = opts.sort((a, b) => Math.abs(a - S.lane) - Math.abs(b - S.lane))[0]; }
+    else if (prize && Math.random() < .08) S.lane = prize.lane;
+  }
+  S.y += (LANES[S.lane] - S.y) * Math.min(1, dt * 14);
+
+  const cx = 360;
+  for (const o of S.objs) {
+    o.x -= S.speed * dt * (o.kind === 'cloud' ? 1.08 : 1);
+    if (!o.done && Math.abs(o.x - cx) < 70 && o.lane === S.lane && Math.abs(S.y - o.y) < 60) {
+      o.done = true;
+      if (o.kind === 'cloud') {
+        if (S.umbrella > 0) { floatText('COVERED!', cx, S.y - 90, C.cyan); burst(o.x, o.y, C.cyan, 14); }
+        else { S.glow--; S.shake = 1; S.flash = 1; S.stats.clouds++; burst(o.x, o.y, C.pink, 26, 520);
+          floatText(o.user ? `−1 · thanks ${o.user}` : '−1', cx, S.y - 90, C.pink);
+          if (o.user) S.mvp.mischief.set(o.user, (S.mvp.mischief.get(o.user) || 0) + 1); }
+      } else {
+        const v = o.kind === 'gift' ? 4 : 1; S.stars += v; S.stats.stars += v; burst(o.x, o.y, o.kind === 'gift' ? C.gold : C.cyan, 22);
+        if (o.kind === 'gift') S.glow = Math.min(S.maxGlow, S.glow + 2);
+        floatText(`+${v}${o.user ? ' · ' + o.user : ''}`, cx, S.y - 90, o.kind === 'gift' ? C.gold : C.mint);
+        if (o.user) S.mvp.glow.set(o.user, (S.mvp.glow.get(o.user) || 0) + v);
+      }
+    }
+    if (!o.done && o.x < cx - 90 && o.kind === 'cloud' && !o.counted) { o.counted = true; S.stats.dodged++; }
+  }
+  S.objs = S.objs.filter(o => o.x > -200 && !o.done);
+
+  if (S.stars >= S.goal) end('glow');
+  else if (S.glow <= 0) end('mischief');
+  else if (S.time <= 0) end('mischief');
+}
+function end(w) {
+  S.phase = 'end'; S.winner = w; S.shake = 0;
+  banner(w === 'glow' ? 'THE LIGHT MADE IT HOME' : 'THE STORM WINS TONIGHT', w === 'glow' ? 'Streamer + Glow crew deliver!' : 'Mischief crew takes the round', w === 'glow' ? C.cyan : C.pink);
+  for (let i = 0; i < 6; i++) burst(rnd(400, 1500), rnd(200, 600), w === 'glow' ? C.gold : C.pink, 30, 600);
+}
+
+// ------------------------------------------------------------ drawing
+function rr(x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+const starsBg = Array.from({ length: 140 }, () => ({ x: rnd(0, W), y: rnd(0, 520), r: rnd(.6, 2.2), p: rnd(0, 6) }));
+const sky1 = Array.from({ length: 40 }, (_, i) => ({ w: rnd(70, 160), h: rnd(120, 330), x: i * 130 }));
+const sky2 = Array.from({ length: 30 }, (_, i) => ({ w: rnd(110, 220), h: rnd(80, 220), x: i * 190, lit: Array.from({ length: 12 }, () => Math.random() < .3) }));
+
+function drawBackground() {
+  if (OVERLAY) { // transparent for OBS: only thin lane guides, no sky/city/road fill
+    g.strokeStyle = 'rgba(94,242,255,.55)'; g.lineWidth = 3; g.shadowColor = C.cyan; g.shadowBlur = 12;
+    g.beginPath(); g.moveTo(0, 472); g.lineTo(W, 472); g.stroke(); g.shadowBlur = 0;
+    g.setLineDash([60, 50]); g.lineDashOffset = S.scroll % 110; g.strokeStyle = 'rgba(255,255,255,.28)'; g.lineWidth = 3;
+    for (const y of [645, 815, 985]) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    g.setLineDash([]);
+    if (S.phase === 'play') { g.fillStyle = 'rgba(94,242,255,.06)'; g.fillRect(0, LANES[S.lane] - 80, W, 160); }
+    return;
+  }
+  const sky = g.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, OVERLAY ? 'rgba(10,8,40,.55)' : '#0b0930'); sky.addColorStop(.55, OVERLAY ? 'rgba(40,18,70,.45)' : '#2a1250');
+  sky.addColorStop(1, OVERLAY ? 'rgba(10,8,25,.65)' : '#0a0818');
+  g.fillStyle = sky; g.fillRect(0, 0, W, H);
+  for (const s of starsBg) { g.globalAlpha = .4 + .6 * Math.abs(Math.sin(S.t * 1.3 + s.p)); g.fillStyle = '#fff'; g.beginPath(); g.arc(s.x, s.y, s.r, 0, 7); g.fill(); }
+  g.globalAlpha = 1;
+  // moon
+  const mg = g.createRadialGradient(1480, 190, 10, 1480, 190, 220); mg.addColorStop(0, 'rgba(255,230,180,.9)'); mg.addColorStop(.25, 'rgba(255,210,150,.35)'); mg.addColorStop(1, 'rgba(255,200,150,0)');
+  g.fillStyle = mg; g.fillRect(1260, 0, 440, 420); g.fillStyle = '#ffeccc'; g.beginPath(); g.arc(1480, 190, 62, 0, 7); g.fill();
+  // far skyline
+  const o1 = (S.scroll * .15) % 5200;
+  g.fillStyle = '#1c1240';
+  for (const b of sky1) { const x = ((b.x - o1) % 5200 + 5200) % 5200 - 200; g.fillRect(x, 470 - b.h, b.w, b.h + 20); }
+  // near skyline with windows
+  const o2 = (S.scroll * .35) % 5700;
+  for (const b of sky2) { const x = ((b.x - o2) % 5700 + 5700) % 5700 - 220; g.fillStyle = '#140d2e'; g.fillRect(x, 480 - b.h, b.w, b.h + 20);
+    b.lit.forEach((on, i) => { if (!on) return; g.fillStyle = i % 3 ? 'rgba(255,209,102,.55)' : 'rgba(94,242,255,.45)'; g.fillRect(x + 14 + (i % 3) * (b.w / 3.4), 500 - b.h + Math.floor(i / 3) * 34, 16, 18); }); }
+  // road
+  const rg = g.createLinearGradient(0, 470, 0, H); rg.addColorStop(0, '#191536'); rg.addColorStop(1, '#0c0a1d');
+  g.fillStyle = rg; g.fillRect(0, 470, W, H - 470);
+  g.strokeStyle = 'rgba(94,242,255,.5)'; g.lineWidth = 3; g.shadowColor = C.cyan; g.shadowBlur = 14;
+  g.beginPath(); g.moveTo(0, 472); g.lineTo(W, 472); g.stroke(); g.shadowBlur = 0;
+  g.setLineDash([60, 50]); g.lineDashOffset = S.scroll % 110; g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 4;
+  for (const y of [645, 815]) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  g.setLineDash([]);
+  // lane glow for the courier's lane
+  if (S.phase === 'play') { g.fillStyle = 'rgba(94,242,255,.05)'; g.fillRect(0, LANES[S.lane] - 80, W, 160); }
+}
+
+function drawStar(x, y, r, color, rot) {
+  g.save(); g.translate(x, y); g.rotate(rot); g.beginPath();
+  for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5, rad = i % 2 ? r * .45 : r; g.lineTo(Math.cos(a) * rad, Math.sin(a) * rad); }
+  g.closePath(); g.fillStyle = color; g.shadowColor = color; g.shadowBlur = 28; g.fill(); g.restore();
+}
+function drawCloud(x, y, s, color) {
+  g.save(); g.translate(x, y); g.fillStyle = color; g.shadowColor = color; g.shadowBlur = 24;
+  for (const [dx, dy, r] of [[-30, 6, 26], [0, -10, 34], [32, 4, 26], [8, 14, 28]]) { g.beginPath(); g.arc(dx * s, dy * s, r * s, 0, 7); g.fill(); }
+  g.restore();
+}
+function drawTag(x, y, label, user, color) {
+  g.font = '700 26px "Segoe UI", system-ui'; const w1 = g.measureText(label).width;
+  g.font = '500 18px "Segoe UI", system-ui'; const w2 = user ? g.measureText('@' + user).width : 0;
+  const w = Math.max(w1, w2) + 28, h = user ? 58 : 36;
+  rr(x - w / 2, y - h - 46, w, h, 12); g.fillStyle = 'rgba(8,8,24,.82)'; g.fill(); g.strokeStyle = color; g.lineWidth = 2; g.stroke();
+  g.textAlign = 'center'; g.fillStyle = '#fff'; g.font = '700 26px "Segoe UI", system-ui'; g.fillText(label, x, y - h - 46 + 28);
+  if (user) { g.fillStyle = color; g.font = '500 18px "Segoe UI", system-ui'; g.fillText('@' + user, x, y - h - 46 + 50); }
+}
+function drawObjects() {
+  for (const o of S.objs) {
+    const y = o.y + Math.sin(S.t * 3 + o.bob) * 8;
+    if (o.kind === 'star') { drawStar(o.x, y, 30, C.cyan, S.t * 2 + o.bob); if (o.user) drawTag(o.x, y, o.label, o.user, C.cyan); }
+    else if (o.kind === 'gift') {
+      g.save(); g.translate(o.x, y); g.rotate(Math.sin(S.t * 4) * .1); g.shadowColor = C.gold; g.shadowBlur = 36; g.fillStyle = C.gold; rr(-42, -42, 84, 84, 12); g.fill();
+      g.shadowBlur = 0; g.fillStyle = '#ff8fb8'; g.fillRect(-8, -42, 16, 84); g.fillRect(-42, -8, 84, 16); g.restore(); drawTag(o.x, y, 'GOLDEN GIFT', o.user, C.gold);
+    } else { drawCloud(o.x, y, 1.15, 'rgba(255,111,181,.85)');
+      g.fillStyle = '#fff'; g.font = '700 22px "Segoe UI"'; g.textAlign = 'center'; g.fillText('⚡', o.x, y + 8);
+      if (o.user) drawTag(o.x, y, o.label, o.user, C.pink); }
+  }
+}
+function drawCourier() {
+  const x = 360, y = S.y + Math.sin(S.t * 8) * 4;
+  // lantern light
+  const lr = 160 + S.glow * 22, lg = g.createRadialGradient(x + 40, y - 10, 10, x + 40, y - 10, lr);
+  lg.addColorStop(0, `rgba(255,209,102,${.25 + S.glow * .06})`); lg.addColorStop(1, 'rgba(255,209,102,0)');
+  g.fillStyle = lg; g.fillRect(x - lr, y - lr, lr * 2.4, lr * 2);
+  if (S.umbrella > 0) { g.strokeStyle = `rgba(94,242,255,${.5 + .3 * Math.sin(S.t * 10)})`; g.lineWidth = 6; g.shadowColor = C.cyan; g.shadowBlur = 30;
+    g.beginPath(); g.arc(x, y - 10, 92, Math.PI, 0); g.stroke(); g.shadowBlur = 0; }
+  // wheels
+  g.fillStyle = '#2a2550'; for (const dx of [-36, 36]) { g.beginPath(); g.arc(x + dx, y + 46, 18, 0, 7); g.fill();
+    g.strokeStyle = C.cyan; g.lineWidth = 3; g.beginPath(); g.arc(x + dx, y + 46, 18, S.scroll / 30, S.scroll / 30 + 4); g.stroke(); }
+  // body
+  g.shadowColor = C.cyan; g.shadowBlur = 20; rr(x - 62, y - 50, 124, 92, 26); g.fillStyle = '#dfe8ff'; g.fill(); g.shadowBlur = 0;
+  rr(x - 44, y - 32, 88, 46, 16); g.fillStyle = '#141938'; g.fill();
+  const blink = (S.t % 3.2) < .12 ? 2 : 12;
+  g.fillStyle = C.cyan; rr(x - 26, y - 18, 14, blink, 6); g.fill(); rr(x + 12, y - 18, 14, blink, 6); g.fill();
+  // lantern on a pole
+  g.strokeStyle = '#dfe8ff'; g.lineWidth = 5; g.beginPath(); g.moveTo(x + 48, y - 48); g.lineTo(x + 70, y - 96); g.stroke();
+  g.fillStyle = C.gold; g.shadowColor = C.gold; g.shadowBlur = 20 + S.glow * 6; rr(x + 58, y - 124, 26, 32, 8); g.fill(); g.shadowBlur = 0;
+}
+function drawHUD() {
+  // top bar
+  rr(40, 30, 1840, 118, 22); g.fillStyle = 'rgba(8,8,24,.72)'; g.fill(); g.strokeStyle = 'rgba(94,242,255,.25)'; g.lineWidth = 2; g.stroke();
+  g.textAlign = 'left'; g.fillStyle = C.cyan; g.font = '800 30px "Segoe UI"'; g.fillText('CHAT COURIER', 76, 82);
+  g.fillStyle = C.dim; g.font = '600 18px "Segoe UI"'; g.fillText('LIVE · YOUR CHAT IS THE LEVEL', 76, 112);
+  // lantern pips
+  g.fillStyle = C.dim; g.font = '700 16px "Segoe UI"'; g.fillText('LANTERN', 430, 70);
+  for (let i = 0; i < S.maxGlow; i++) { g.fillStyle = i < S.glow ? C.gold : 'rgba(255,255,255,.12)'; g.shadowColor = C.gold; g.shadowBlur = i < S.glow ? 14 : 0;
+    rr(430 + i * 46, 84, 36, 36, 10); g.fill(); } g.shadowBlur = 0;
+  // stars meter
+  g.fillStyle = C.dim; g.fillText(`STARS  ${S.stars} / ${S.goal}`, 700, 70);
+  rr(700, 86, 420, 30, 15); g.fillStyle = 'rgba(255,255,255,.08)'; g.fill();
+  const pr = clamp(S.stars / S.goal, 0, 1); if (pr > 0) { rr(700, 86, 420 * pr, 30, 15); const sg = g.createLinearGradient(700, 0, 1120, 0); sg.addColorStop(0, C.cyan); sg.addColorStop(1, C.mint); g.fillStyle = sg; g.fill(); }
+  // timer
+  g.textAlign = 'center'; g.fillStyle = S.time < 15 && S.phase === 'play' ? C.pink : C.white; g.font = '800 46px "Segoe UI"';
+  g.fillText(`${Math.max(0, Math.ceil(S.time))}s`, 1230, 104);
+  // tug of war between crews
+  let gl = 0, mi = 0;
+  if (OVERLAY && S.crewCounts) { gl = S.crewCounts.glow || 0; mi = S.crewCounts.mischief || 0; }
+  else for (const v of S.crew.values()) v === 'glow' ? gl++ : mi++;
+  // live status pill (visible on stream)
+  g.textAlign = 'left'; g.font = '700 18px "Segoe UI"';
+  const pill = tw.connected ? `● LIVE ON TWITCH${tw.channel ? '  #' + tw.channel : ''}` : '○ REHEARSAL (NOT CONNECTED)';
+  const pw = g.measureText(pill).width + 32; rr(76, 164, pw, 36, 18);
+  g.fillStyle = tw.connected ? 'rgba(145,70,255,.9)' : 'rgba(8,8,24,.7)'; g.fill();
+  g.fillStyle = tw.connected ? '#fff' : C.dim; g.fillText(pill, 92, 188);
+  const tot = Math.max(1, gl + mi), gw = 480 * (gl / tot || .5);
+  g.textAlign = 'left'; g.fillStyle = C.cyan; g.font = '700 16px "Segoe UI"'; g.fillText(`GLOW CREW ${gl}`, 1340, 70);
+  g.textAlign = 'right'; g.fillStyle = C.pink; g.fillText(`${mi} MISCHIEF CREW`, 1820, 70);
+  rr(1340, 86, 480, 30, 15); g.fillStyle = C.pink; g.fill(); rr(1340, 86, Math.max(30, gw), 30, 15); g.fillStyle = C.cyan; g.fill();
+  // feed
+  g.textAlign = 'left'; S.feed.forEach((f, i) => { g.globalAlpha = Math.min(1, f.life); rr(1500, 190 + i * 52, 380, 42, 12); g.fillStyle = 'rgba(8,8,24,.72)'; g.fill();
+    g.fillStyle = f.color; g.font = '600 19px "Segoe UI"'; g.fillText(f.text.slice(0, 34), 1518, 218 + i * 52); }); g.globalAlpha = 1;
+  // instructions strip
+  if (S.phase === 'play') { g.textAlign = 'center'; g.fillStyle = 'rgba(232,236,255,.75)'; g.font = '600 22px "Segoe UI"';
+    g.fillText('Type  !glow  to send stars   ·   Type  !mischief  to send clouds   ·   Every message joins the road', W / 2, H - 34); }
+}
+function drawOverlays() {
+  for (const p of S.parts) { g.globalAlpha = clamp(p.life, 0, 1); g.fillStyle = p.color; g.beginPath(); g.arc(p.x, p.y, p.r, 0, 7); g.fill(); } g.globalAlpha = 1;
+  for (const f of S.floats) { g.globalAlpha = clamp(f.life, 0, 1); g.textAlign = 'center'; g.font = `800 ${f.size}px "Segoe UI"`; g.fillStyle = f.color; g.shadowColor = f.color; g.shadowBlur = 16; g.fillText(f.text, f.x, f.y); } g.globalAlpha = 1; g.shadowBlur = 0;
+  const b = S.banners[0];
+  if (b) { const a = clamp(Math.min(b.life, 3.2 - b.life) * 3, 0, 1); g.globalAlpha = a; rr(W / 2 - 520, 200, 1040, 130, 26); g.fillStyle = 'rgba(8,8,24,.86)'; g.fill();
+    g.strokeStyle = b.color; g.lineWidth = 3; g.shadowColor = b.color; g.shadowBlur = 30; g.stroke(); g.shadowBlur = 0;
+    g.textAlign = 'center'; g.fillStyle = b.color; g.font = '800 44px "Segoe UI"'; g.fillText(b.title, W / 2, 262); g.fillStyle = C.white; g.font = '500 24px "Segoe UI"'; g.fillText(b.sub, W / 2, 304); g.globalAlpha = 1; }
+  if (S.flash > 0) { g.fillStyle = `rgba(255,111,181,${S.flash * .18})`; g.fillRect(0, 0, W, H); }
+}
+function mvpLine(map) { const top = [...map.entries()].sort((a, b) => b[1] - a[1])[0]; return top ? `${top[0]} (${top[1]})` : '—'; }
+function drawTitle() {
+  g.fillStyle = OVERLAY ? 'rgba(5,5,18,.25)' : 'rgba(5,5,18,.62)'; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center'; g.fillStyle = C.cyan; g.shadowColor = C.cyan; g.shadowBlur = 40; g.font = '900 120px "Segoe UI"'; g.fillText('CHAT COURIER', W / 2, 360); g.shadowBlur = 0;
+  g.fillStyle = C.gold; g.font = '800 44px "Segoe UI"'; g.fillText('LIVE  ·  YOUR CHAT IS THE LEVEL', W / 2, 430);
+  const lines = [['STREAMER', 'Steer the courier with ↑ / ↓. Collect 25 stars before the timer ends.', C.white],
+    ['GLOW CREW  !glow', 'Your messages become signed stars that light the way home.', C.cyan],
+    ['MISCHIEF CREW  !mischief', 'Your messages become storm clouds. Dim the lantern to win.', C.pink],
+    ['LIVE EVENTS', 'Points: umbrella or storm front · Sub: golden gift · Bits: showers · Raid: star parade', C.gold]];
+  lines.forEach(([h, t, col], i) => { rr(W / 2 - 560, 500 + i * 104, 1120, 88, 18); g.fillStyle = 'rgba(14,14,34,.85)'; g.fill(); g.strokeStyle = col; g.globalAlpha = .5; g.lineWidth = 2; g.stroke(); g.globalAlpha = 1;
+    g.textAlign = 'left'; g.fillStyle = col; g.font = '800 24px "Segoe UI"'; g.fillText(h, W / 2 - 530, 536 + i * 104); g.fillStyle = '#cfd6ff'; g.font = '500 22px "Segoe UI"'; g.fillText(t, W / 2 - 530, 570 + i * 104); });
+  g.textAlign = 'center'; g.globalAlpha = .6 + .4 * Math.sin(S.t * 4); g.fillStyle = C.white; g.font = '700 30px "Segoe UI"'; g.fillText('PRESS SPACE OR CLICK TO START', W / 2, 960); g.globalAlpha = 1;
+}
+function drawEnd() {
+  g.fillStyle = OVERLAY ? 'rgba(5,5,18,.3)' : 'rgba(5,5,18,.7)'; g.fillRect(0, 0, W, H);
+  const glow = S.winner === 'glow', col = glow ? C.cyan : C.pink;
+  g.textAlign = 'center'; g.fillStyle = col; g.shadowColor = col; g.shadowBlur = 40; g.font = '900 96px "Segoe UI"';
+  g.fillText(glow ? 'THE LIGHT MADE IT HOME' : 'THE STORM WINS TONIGHT', W / 2, 330); g.shadowBlur = 0;
+  const cards = [['STARS COLLECTED', String(S.stats.stars), C.cyan], ['CLOUDS DODGED', String(S.stats.dodged), C.mint], ['CHAT MESSAGES', String(S.stats.msgs), C.gold], ['LIVE EVENTS', String(S.stats.events), C.violet]];
+  cards.forEach(([l, v, c], i) => { const x = W / 2 - 720 + i * 370; rr(x, 400, 330, 170, 22); g.fillStyle = 'rgba(14,14,34,.9)'; g.fill(); g.strokeStyle = c; g.lineWidth = 2; g.stroke();
+    g.fillStyle = c; g.font = '900 72px "Segoe UI"'; g.fillText(v, x + 165, 500); g.fillStyle = C.dim; g.font = '700 20px "Segoe UI"'; g.fillText(l, x + 165, 545); });
+  g.fillStyle = C.cyan; g.font = '700 32px "Segoe UI"'; g.fillText(`Glow MVP: ${mvpLine(S.mvp.glow)}`, W / 2, 660);
+  g.fillStyle = C.pink; g.fillText(`Mischief MVP: ${mvpLine(S.mvp.mischief)}`, W / 2, 710);
+  g.globalAlpha = .6 + .4 * Math.sin(S.t * 4); g.fillStyle = C.white; g.font = '700 30px "Segoe UI"'; g.fillText('PRESS SPACE OR CLICK FOR ANOTHER DELIVERY', W / 2, 860); g.globalAlpha = 1;
+}
+function frame() {
+  g.save(); g.clearRect(0, 0, W, H);
+  if (S.shake > 0) g.translate(rnd(-12, 12) * S.shake, rnd(-12, 12) * S.shake);
+  drawBackground(); drawObjects(); drawCourier(); drawHUD(); drawOverlays();
+  if (S.phase === 'title') drawTitle(); else if (S.phase === 'end') drawEnd();
+  g.restore();
+}
+let last = performance.now();
+function loop(now) { const dt = Math.min(.05, (now - last) / 1000); last = now; update(dt); frame(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+if (!OVERLAY && params.get('autostart') === '1') start();
+if (!OVERLAY && params.get('demo') === '1') { auto = true; start(); setInterval(() => sim(['chat', 'glow', 'mischief', 'chat', 'glow'][Math.floor(Math.random() * 5)]), 700); setTimeout(() => sim('subscribe'), 6000); setTimeout(() => sim('reward'), 11000); setTimeout(() => sim('cheer'), 16000); }
+window.CourierLive = { handle, start, sim };
+})();
+</script>
+</body>
+</html>
