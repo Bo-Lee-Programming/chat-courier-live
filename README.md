@@ -37,6 +37,9 @@ The adapter uses Twitch EventSub WebSockets. Chat requires `user:read:chat`. Cha
 
 An unassigned viewer receives a stable team based on their name. Viewers can change teams. Random lanes, incoming language and opposing crews change the road each run.
 
+## Save a clip
+Use **Record game clip** in the game panel, then **Stop and save clip**. It records only the canvas, without microphone, desktop or login fields. Clips stop automatically at 2 minutes 45 seconds and download as WebM. Keep the controller visible while recording. The on-screen rehearsal/live status is included.
+
 ## OBS browser source
 Add `http://127.0.0.1:8787/LIVE.html?overlay=1` as a Browser Source at **1920 x 1080**.
 The local Node server sends controller snapshots to OBS. The overlay mirrors the same courier, score, timer and objects rather than running a second game.
